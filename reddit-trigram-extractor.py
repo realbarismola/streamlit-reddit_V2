@@ -1,0 +1,94 @@
+import subprocess
+
+# Install the necessary packages
+subprocess.call(['pip', 'install', 'praw'])
+subprocess.call(['pip', 'install', 'nltk'])
+subprocess.call(['pip', 'install', 'gensim'])
+subprocess.call(['pip', 'install', 'streamlit'])
+
+
+import time
+import praw
+import nltk
+import gensim
+from nltk.corpus import stopwords
+from collections import Counter
+from itertools import tee, islice
+from multiprocessing import Pool, cpu_count
+
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
+import streamlit as st
+
+st.title('Reddit Topic Finder')
+
+def preprocess(posts):
+    # Combine the title and body of each post
+    text = ' '.join([post.title + ' ' + post.selftext for post in posts])
+    # Tokenize the text into words
+    words = nltk.word_tokenize(text.lower())
+    # Remove stop words and punctuation marks
+    stop_words = set(stopwords.words('english'))
+    words = (word for word in words if word.isalpha() and word not in stop_words)
+    # Yield the words in groups of three
+    return zip(words, islice(words, 1, None), islice(words, 2, None))
+
+def count_trigrams(trigrams):
+    # Create a dictionary for the trigrams and their frequency
+    trigram_dict = Counter()
+    for trigram in trigrams:
+        trigram_dict[trigram] += 1
+
+    # Remove trigrams that contain stop words
+    for trigram in list(trigram_dict):
+        if any(word in stop_words for word in trigram):
+            del trigram_dict[trigram]
+
+    return trigram_dict
+
+def main():
+    start_time = time.time()
+    # Set up the Reddit API connection
+    reddit = praw.Reddit(client_id='nrGPL_tS8GZIp8ccFFDodw',
+                         client_secret='j8KG735o7cN_h-DPdNdePekW7FL5tg',
+                         user_agent='OldSchoolHaze68')
+
+    # Prompt the user to enter the name of the subreddit to analyze
+    subreddit_name = st.text_input('Enter the name of the subreddit to analyze')
+
+    # Wait for the user to enter a subreddit name before proceeding
+    if not subreddit_name:
+        return
+
+    try:
+        # Get the top posts from the subreddit
+        subreddit = reddit.subreddit(subreddit_name)
+        all_posts = subreddit.top(limit=None)
+
+        # Preprocess the posts
+        trigram_lists = []
+        chunk_size = 1000
+        for chunk in [list(all_posts)[i:i+chunk_size] for i in range(0, len(all_posts), chunk_size)]:
+            trigram_lists.append(preprocess(chunk))
+
+        # Count the trigrams
+        trigram_counts = Counter()
+        with Pool(processes=cpu_count()) as pool:
+            for trigram_dict in pool.imap(count_trigrams, trigram_lists):
+                trigram_counts.update(trigram_dict)
+
+        # Print the top 10 most common trigrams
+        st.write('Top 10 most common trigrams:')
+        for trigram, count in trigram_counts.most_common(10):
+            st.write(f'{trigram} ({count} occurrences)')
+
+    except Exception as e:
+        st.write(f'Error: {e}')
+
+    # Measure the elapsed time and display it to the user
+    elapsed_time = time.time() - start_time
+    st.write(f'Time elapsed: {elapsed_time:.2f} seconds')
+
+if __name__ == '__main__':
+    main()
