@@ -6,7 +6,6 @@ subprocess.call(['pip', 'install', 'nltk'])
 subprocess.call(['pip', 'install', 'gensim'])
 subprocess.call(['pip', 'install', 'streamlit'])
 
-
 import time
 import praw
 import nltk
@@ -14,7 +13,7 @@ import gensim
 from nltk.corpus import stopwords
 from collections import Counter
 from itertools import tee, islice
-from multiprocessing import Pool, cpu_count
+import concurrent.futures
 
 import nltk
 nltk.download('punkt')
@@ -24,27 +23,26 @@ import streamlit as st
 st.title('Reddit Topic Finder')
 
 def preprocess(posts):
-    # Combine the title and body of each post
-    text = ' '.join([post.title + ' ' + post.selftext for post in posts])
-    # Tokenize the text into words
+    # Combine the title and body of each post and preprocess the text
+    text = ''
+    for post in posts:
+        text += post.title + ' ' + post.selftext + ' '
     words = nltk.word_tokenize(text.lower())
-    # Remove stop words and punctuation marks
     stop_words = set(stopwords.words('english'))
-    words = (word for word in words if word.isalpha() and word not in stop_words)
-    # Yield the words in groups of three
-    return zip(words, islice(words, 1, None), islice(words, 2, None))
+    words = [word for word in words if word.isalpha() and word not in stop_words]
+    return words
 
-def count_trigrams(trigrams):
-    # Create a dictionary for the trigrams and their frequency
-    trigram_dict = Counter()
+def trigram_generator(words):
+    # Use a generator to extract trigrams from the preprocessed text
+    trigrams = zip(words, islice(words, 1, None), islice(words, 2, None))
     for trigram in trigrams:
+        yield trigram
+
+def count_trigrams(trigram_gen):
+    # Use a counter to count the frequency of each trigram
+    trigram_dict = Counter()
+    for trigram in trigram_gen:
         trigram_dict[trigram] += 1
-
-    # Remove trigrams that contain stop words
-    for trigram in list(trigram_dict):
-        if any(word in stop_words for word in trigram):
-            del trigram_dict[trigram]
-
     return trigram_dict
 
 def main():
@@ -66,17 +64,24 @@ def main():
         subreddit = reddit.subreddit(subreddit_name)
         all_posts = subreddit.top(limit=None)
 
-        # Preprocess the posts
-        trigram_lists = []
-        chunk_size = 1000
-        for chunk in [list(all_posts)[i:i+chunk_size] for i in range(0, len(all_posts), chunk_size)]:
-            trigram_lists.append(preprocess(chunk))
+        # Preprocess the text
+        words = preprocess(all_posts)
 
-        # Count the trigrams
-        trigram_counts = Counter()
-        with Pool(processes=cpu_count()) as pool:
-            for trigram_dict in pool.imap(count_trigrams, trigram_lists):
-                trigram_counts.update(trigram_dict)
+        # Use multiprocessing to count the trigrams in parallel
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            # Split the words into chunks for processing in parallel
+            chunk_size = 10000
+            chunks = [words[i:i+chunk_size] for i in range(0, len(words), chunk_size)]
+            # Process each chunk in parallel and combine the results
+            trigram_counts = Counter()
+            for chunk_trigram_counts in executor.map(count_trigrams, map(trigram_generator, chunks)):
+                trigram_counts += chunk_trigram_counts
+
+        # Remove trigrams that contain stop words
+        stop_words = set(stopwords.words('english'))
+        for trigram in list(trigram_counts):
+            if any(word in stop_words for word in trigram):
+                del trigram_counts[trigram]
 
         # Print the top 10 most common trigrams
         st.write('Top 10 most common trigrams:')
